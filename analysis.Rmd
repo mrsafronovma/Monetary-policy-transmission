@@ -22,8 +22,8 @@ library(patchwork)
 ## 1. Introduction & Data
 
 
-In this project studied impact of monetary policy shock on inflation and output in USA from 1979 to 1995. 
-Data was loaded from FRED in `scripts/01_data_prep_US.R`.
+In this project, I study the impact of monetary policy shocks on inflation and output in the US economy.
+The macroeconomic data was retrieved from the FRED database in `scripts/01_data_prep_US.R`.
 
 ```{r}
 
@@ -36,12 +36,18 @@ var_data <- macro_data %>%
 ```
 
 For the regression we take data of :
- - percent change in natural resources
- - output growth
- - inflation 
- - interest rate
- - change in bank reserves
- - M1 percent change
+
+ - Commodity price growth
+
+ - Industrial output growth
+
+ - Inflation rate
+
+ - Federal Funds Rate (policy instrument)
+
+ - Non-borrowed reserves growth
+
+ - M1 money supply growth
 
 
 ## 2. VAR and LP models
