@@ -1,0 +1,351 @@
+---
+title: "Monetary Policy Transmission"
+author: "Mikhail Safronov"
+date: "09-05-2026"
+output: 
+  pdf_document:
+    latex_engine: xelatex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+library(tidyverse)
+library(vars)
+library(MASS)
+library(lpirfs)
+library(texreg)
+library(knitr) 
+library(patchwork)
+```
+
+## 1. Introduction & Data
+
+
+In this project studied impact of monetary policy shock on inflation and output in USA from 1979 to 1995. 
+Data was loaded from FRED in `scripts/01_data_prep_US.R`.
+
+```{r}
+
+macro_data <- read_rds("data/cleaned_macro_data_US.rds")
+
+
+var_data <- macro_data %>%
+  dplyr::select(comm_growth, output_growth, infl, rate_level, reserve_growth, m1_growth)
+
+```
+
+For the regression we take data of :
+ - percent change in natural resources
+ - output growth
+ - inflation 
+ - interest rate
+ - change in bank reserves
+ - M1 percent change
+
+
+## 2. VAR and LP models
+```{r}
+
+lag_selection <- VARselect(var_data, lag.max = 12, type = "const")
+
+print(lag_selection$selection)
+
+
+
+p_lag <- lag_selection$selection["SC(n)"]
+
+var_model <- vars::VAR(var_data, p = p_lag, type = "const")
+
+roots <- roots(var_model)
+print("Number of roots greater than 1:")
+print(sum(roots>=1))
+```
+
+Schwartz information criteria suggest lag 1 for our model. All roots of characteristic equation is smaller than 1, therefore, data is stationary
+
+```{r}
+irf_result <- irf(var_model, 
+                  impulse = "rate_level", 
+                  response = c("output_growth", "infl"), 
+                  n.ahead = 60, 
+                  boot = TRUE, 
+                  ci = 0.95, 
+                  runs = 100) 
+
+
+extract_irf_to_df <- function(irf_obj, shock_name) {
+  
+  responses <- colnames(irf_obj$irf[[shock_name]])
+  
+  df_list <- lapply(responses, function(resp) {
+    data.frame(
+      horizon = 0:(nrow(irf_obj$irf[[shock_name]]) - 1),
+      response_var = resp,
+      pe = irf_obj$irf[[shock_name]][, resp],       # estimation
+      lower = irf_obj$Lower[[shock_name]][, resp],  # lower bound of CI
+      upper = irf_obj$Upper[[shock_name]][, resp]   # upper bound of CI
+    )
+  })
+  
+  bind_rows(df_list) %>% as_tibble()
+}
+
+irf_data <- extract_irf_to_df(irf_result, "rate_level")
+
+```
+
+Calculate impulse response function for 60 lags, using 95% confidence interval and bootstrap via 1000 runs.
+
+```{r}
+ggplot(irf_data, aes(x = horizon, y = pe)) +
+  geom_hline(yintercept = 0, color = "black", linetype = "solid", linewidth = 0.5) +
+  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2, fill = "steelblue") +
+  geom_line(color = "navy", linewidth = 1) +
+  facet_wrap(~ response_var, scales = "free_y", 
+             labeller = as_labeller(c(
+               output_growth = "Response of Output Growth", 
+               infl = "Response of Inflation"
+             ))) +
+  theme_minimal(base_size = 14) +
+  labs(
+    title = "Impulse Responses to an Interest Rate Shock",
+    x = "Months after shock",
+    y = "Response"
+  ) +
+  theme(
+    strip.text = element_text(face = "bold", size = 12),
+    plot.title = element_text(face = "bold"),
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.5)
+  )
+
+
+```
+
+As we can observe, monetary policy shock gives immediate effect on output, while effect on inflation is statistically insignificant, and even increase right after shock.
+
+```{r}
+
+
+lp_results <- lp_lin(
+  endog_data = var_data,
+  lags_endog_lin = 4,   
+  trend = 0,            
+  shock_type = 1,       
+  confint = 1.96,       
+  hor = 60
+)
+
+plot_lin_graphs <- plot_lin(lp_results)
+
+plot_output <- plot_lin_graphs[[10]]
+plot_infl <- plot_lin_graphs[[16]]
+
+plot_output + plot_infl & scale_x_continuous(breaks = seq(0, 60, by = 12))
+```
+
+
+
+
+Use Local Projections method for identification. Still impact of rate shock on inflation in negligible, or spikes up follow by spikes down like a chain with overall slightly decreasing trend.
+
+```{r}
+
+
+fevd_results <- fevd(var_model, n.ahead = 24)
+
+
+plot(fevd_results, names = "infl", main = "Variance Decomposition of Inflation")
+
+plot(fevd_results, names = "output_growth", main = "Variance Decomposition of Output")
+
+
+```
+
+Overall, rate change con
+tributes to 5-7% of variance of inflation and output change.
+
+
+
+```{r}
+
+causality_infl <- causality(var_model, cause = "rate_level")$Granger
+print(causality_infl)
+
+```
+
+
+Testing causality - we reject the null hypotheses that rate do not Granger-cause
+
+
+
+```{r, warning=FALSE, message=FALSE}
+
+amat <- diag(6)
+amat[lower.tri(amat)] <- NA 
+
+bmat <- diag(6)
+diag(bmat) <- NA
+
+svar_model <- vars::SVAR(var_model, 
+                         estmethod = "scoring", 
+                         Amat = amat, 
+                         Bmat = bmat)
+
+
+irf_svar <- irf(svar_model, 
+                impulse = "rate_level", 
+                response = c("output_growth", "infl"), 
+                n.ahead = 48, 
+                boot = TRUE,
+                runs = 100,
+                ci = 0.9)
+
+
+plot(irf_svar)
+
+
+```
+
+When use sVAR for identification of monetary policy shock, we can notice that, while there is still significant inflation increase in the beginning, after 18th month inflation slowly goes down, however still insignificantly.
+
+## 3. Romer's residuals
+```{r, warning=FALSE, message=FALSE}
+
+
+romer_monthly <- read_delim("RomerandRomerDataAppendix.csv", locale = locale(decimal_mark = ","))
+
+romer_clean <- romer_monthly %>%
+  mutate(
+    time = dmy(DATE) 
+  ) %>%
+  dplyr::select(time, romer_inv = RESID) %>%
+  arrange(time)
+
+
+```
+
+For the further identification of monetary policy shock, we will use Romer's residuals - change between real and predicted rates.
+
+
+
+```{r, echo=FALSE}
+
+us_macro <- read_rds("data/cleaned_macro_data_US.rds")
+
+
+final_us_data <- us_macro %>%
+  left_join(romer_clean, by = "time") %>%
+  drop_na(romer_inv)
+
+
+
+```
+
+
+Now, instead of percent change, we will observe price level reaction to policy shock.
+
+
+
+
+```{r}
+
+var_romer_data <- final_us_data %>%
+  dplyr::select(romer_inv, comm_growth, output_growth, infl, reserve_growth, m1_growth)
+
+var_romer_data <- as.data.frame(var_romer_data)
+
+var_romer_model <- vars::VAR(var_romer_data, p = 12, type = "const")
+
+
+irf_romer_cum <- irf(var_romer_model, 
+                 impulse = "romer_inv", 
+                 response = c("output_growth", "infl"), 
+                 n.ahead = 60, 
+                 cumulative = TRUE, 
+                 boot = TRUE,
+                 ci = 0.9,
+                 runs = 100)
+
+plot(irf_romer_cum)
+
+
+
+```
+Price level falls after 8th month, however effect is insignificant, as well as for output.
+
+
+```{r, warning=FALSE}
+amat <- diag(6)
+amat[lower.tri(amat)] <- NA 
+
+bmat <- diag(6)
+diag(bmat) <- NA
+
+svar_romer_model <- vars::SVAR(var_romer_model, 
+                         estmethod = "scoring", 
+                         Amat = amat, 
+                         Bmat = bmat)
+
+
+irf_svar_romer <- irf(svar_romer_model, 
+                impulse = "romer_inv", 
+                response = c("output_growth", "infl"), 
+                n.ahead = 48, 
+                cumulative = TRUE,
+                boot = TRUE,
+                ci = 0.9,
+                runs = 100)
+
+
+plot(irf_svar_romer)
+```
+
+
+Now, we see statistically significant drop for output and decrease for price level. While upper confidence interval bound for prices is slightly above zero, it may be due to strict z-critical as argue Sims&Zha(1999) - more important is the fact that there is no raise of inflation.
+
+
+```{r, include=FALSE}
+
+
+
+
+irf_romer_cholesky <- irf(var_romer_model, 
+                          impulse = "romer_inv", 
+                          response = c("output_growth", "infl"), 
+                          n.ahead = 60, 
+                          cumulative = TRUE,
+                          ortho = TRUE, 
+                          boot = TRUE,
+                          runs = 100)
+
+plot(irf_romer_cholesky)
+
+
+```
+
+
+
+
+```{r}
+
+fevd_romer_results <- fevd(var_romer_model, n.ahead = 24)
+
+plot(fevd_romer_results, names = "infl", main = "Variance Decomposition of Inflation")
+
+plot(fevd_romer_results, names = "output_growth", main = "Variance Decomposition of Output")
+
+
+```
+
+For inflation, this setting after 4th lag explain about 6-7% of variance, while for output this value is about 20% 
+
+\newpage
+
+## Literature
+
+* **Federal Reserve Bank of St. Louis.** *Federal Reserve Economic Data (FRED).* URL: [https://fred.stlouisfed.org/](https://fred.stlouisfed.org/)
+* **Romer, C. D., & Romer, D. H. (2004).** A New Measure of Monetary Shocks: Derivation and Implications. *The American Economic Review*, 94(4), 1055-1084. URL: [https://www.aeaweb.org/articles?id=10.1257/0002828042002651](https://www.aeaweb.org/articles?id=10.1257/0002828042002651)
+* **Sims, C. A., & Zha, T. (1999).** Error Bands for Impulse Responses. *Econometrica*, 67(5), 1113-1155. 
+
