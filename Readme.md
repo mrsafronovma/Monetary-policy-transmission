@@ -17,7 +17,7 @@ icles?id=10.1257/0002828042002651
 
 # How to run
 
-1. Download RomerandRomerDataAppendix.xls from AER or oficial site of D.Romer and put in working directory
+1. Download RomerandRomerDataAppendix.xls from AER or official site of D.Romer and place it in working directory
 
 2. Run file 'scripts\01_data_prep_US.R'
 
